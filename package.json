@@ -5,7 +5,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon server.js"
+    "dev:ws": "nodemon server.js",
+    "dev:static": "nodemon static-server.js",
+    "dev": "concurrently \"npm run dev:ws\" \"npm run dev:static\""
   },
   "repository": {
     "type": "git",
@@ -16,5 +18,8 @@
   "bugs": {
     "url": "https://github.com/benjamin-cofrancesco/websocket-chat/issues"
   },
-  "homepage": "https://github.com/benjamin-cofrancesco/websocket-chat#readme"
+  "homepage": "https://github.com/benjamin-cofrancesco/websocket-chat#readme",
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
 }
