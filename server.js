@@ -5,7 +5,6 @@ const PORT = 3333;
 const WEBSOCKET_KEY = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const SEVEN_BITS_INT_MARKER = 125;
 const SIXTEEN_BITS_INT_MARKER = 126;
-const SIXTYFOUR_BITS_INT_MARKER = 127;
 const FIRST_BIT = 128;
 const MASKED_KEY = 4;
 const OPCODE_TEXT = 0x01;
@@ -21,19 +20,40 @@ const server = createServer((req, res) => {
 const handleSocketUpgrade = (req, socket, head) => {
   const { "sec-websocket-key": webClientSocketKey } = req.headers;
 
+  if (!webClientSocketKey) {
+    socket.destroy();
+    return;
+  }
+
   const headers = handleSocketHandshake(webClientSocketKey);
 
   socket.write(headers);
-  socket.on("readable", () => onSocketOnReadable(socket));
+  socket.on("readable", () => {
+    try {
+      onSocketOnReadable(socket);
+    } catch (error) {
+      console.error("Socket read error:", error);
+    }
+  });
 
   clients.add(socket);
 
   socket.on("close", () => {
     clients.delete(socket);
   });
+
+  socket.on("error", (err) => {
+    console.error("Socket error:", err);
+    clients.delete(socket);
+    socket.destroy();
+  });
 };
 
 const unmask = (encoded, maskedKey) => {
+  if (!encoded || !maskedKey) {
+    return Buffer.from("");
+  }
+
   const finalBuffer = Buffer.from(encoded);
 
   for (let i = 0; i < encoded.length; i++) {
@@ -74,7 +94,7 @@ const prepareMessage = (message) => {
     dataFrameBuffer = target;
   } else {
     throw new Error(
-      "Long messages are great but we aren't paying for your love letters buddy",
+      "Long messages are great but we aren't paying for your love letters buddy"
     );
   }
 
@@ -97,9 +117,38 @@ const concat = (bufferList, totalLength) => {
 };
 
 const onSocketOnReadable = (socket) => {
-  socket.read(1);
+  const firstByte = socket.read(1);
+  if (!firstByte) {
+    return;
+  }
 
-  const [markerAndPayloadLength] = socket.read(1);
+  const opcode = firstByte[0] & 0x0f;
+
+  if (opcode !== OPCODE_TEXT) {
+    console.log(`Received non-text frame with opcode: ${opcode}, skipping`);
+
+    const secondByte = socket.read(1);
+    if (!secondByte) return;
+
+    const length = secondByte[0] & 0x7f;
+    if (length <= 0) return;
+
+    socket.read(MASKED_KEY + length);
+    return;
+  }
+
+  const secondByte = socket.read(1);
+  if (!secondByte) {
+    return;
+  }
+
+  const [markerAndPayloadLength] = secondByte;
+
+  if ((markerAndPayloadLength & FIRST_BIT) !== FIRST_BIT) {
+    console.error("Invalid WebSocket frame - first bit not set");
+    return;
+  }
+
   const lengthIndicatorInBits = markerAndPayloadLength - FIRST_BIT;
 
   let messageLength = 0;
@@ -107,19 +156,64 @@ const onSocketOnReadable = (socket) => {
   if (lengthIndicatorInBits <= SEVEN_BITS_INT_MARKER) {
     messageLength = lengthIndicatorInBits;
   } else if (lengthIndicatorInBits === SIXTEEN_BITS_INT_MARKER) {
-    messageLength = socket.read(2).readUint16BE(0);
+    const lengthBytes = socket.read(2);
+    if (!lengthBytes || lengthBytes.length < 2) {
+      return;
+    }
+    messageLength = lengthBytes.readUint16BE(0);
   } else {
-    throw new Error("Message too long");
+    console.error("Message too long or invalid length indicator");
+    return;
+  }
+
+  if (messageLength <= 0 || messageLength > MAXIMUM_SIXTEEN_BITS_INTEGER) {
+    console.error("Invalid message length:", messageLength);
+    return;
   }
 
   const maskedKey = socket.read(MASKED_KEY);
+  if (!maskedKey || maskedKey.length < MASKED_KEY) {
+    return;
+  }
 
   const encoded = socket.read(messageLength);
+  if (!encoded || encoded.length < messageLength) {
+    return;
+  }
 
   const decoded = unmask(encoded, maskedKey);
-  const recieved = decoded.toString("utf8");
+  const received = decoded.toString("utf8");
 
-  const data = JSON.parse(recieved);
+  if (
+    !received ||
+    received.trim() === "" ||
+    (!(received.trim().startsWith("{") && received.trim().endsWith("}")) &&
+      !(received.trim().startsWith("[") && received.trim().endsWith("]")))
+  ) {
+    console.error(
+      "Received data is not valid JSON format:",
+      received.length > 30 ? received.substring(0, 30) + "..." : received
+    );
+    return;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(received);
+  } catch (error) {
+    console.error(
+      "Invalid JSON received:",
+      error.message,
+      "Data:",
+      received.length > 100 ? received.substring(0, 100) + "..." : received
+    );
+    return;
+  }
+
+  if (!data) {
+    console.error("Received null or undefined data");
+    return;
+  }
 
   const msg = JSON.stringify({
     data,
@@ -127,7 +221,6 @@ const onSocketOnReadable = (socket) => {
   });
 
   sendMessage(msg, socket);
-
   broadcast(msg, socket);
 };
 
@@ -135,7 +228,13 @@ const broadcast = (msg, sender) => {
   const data = prepareMessage(msg);
   for (const client of clients) {
     if (client !== sender && client.writable) {
-      client.write(data);
+      try {
+        client.write(data);
+      } catch (error) {
+        console.error("Error broadcasting to client:", error);
+
+        clients.delete(client);
+      }
     }
   }
 };

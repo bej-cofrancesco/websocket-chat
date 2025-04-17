@@ -9,6 +9,7 @@ This project is a **real-time chat application** built **from scratch using nati
 - 🔧 **Custom WebSocket Server** (no libraries, raw protocol handling)
 - 🗨️ **Real-Time Messaging** between multiple users
 - 🪄 **Smooth frontend built with HTML/CSS/JS**
+- 🧍‍♂️ **Fake Auth**
 
 ---
 
